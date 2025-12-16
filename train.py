@@ -1,22 +1,90 @@
 import os
 import zipfile
+import tarfile
 import argparse
 from pathlib import Path
 from rfdetr import RFDETRSmall
 
 
-def extract_dataset(zip_path, extract_to="/tmp/dataset"):
-    """Extract the LVIS dataset zip file."""
-    print(f"Extracting dataset from {zip_path}...")
+def extract_dataset(archive_path, extract_to="/tmp/dataset"):
+    """Extract the LVIS dataset from tar.gz or zip file."""
+    
+    # Check if already extracted
+    dataset_dir = os.path.join(extract_to, 'lvis_rfdetr_dataset')
+    if os.path.exists(dataset_dir) and os.path.exists(os.path.join(dataset_dir, 'train')):
+        print(f"✅ Dataset already extracted at {dataset_dir}")
+        return dataset_dir
+    
+    print(f"Extracting dataset from {archive_path}...")
+    
+    # Check if file exists and get size
+    if not os.path.exists(archive_path):
+        raise FileNotFoundError(f"Dataset archive file not found: {archive_path}")
+    
+    file_size_gb = os.path.getsize(archive_path) / (1024**3)
+    print(f"  Archive file size: {file_size_gb:.2f} GB")
+    
     os.makedirs(extract_to, exist_ok=True)
     
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
+    # Determine file type and extract accordingly
+    if archive_path.endswith('.tar.gz') or archive_path.endswith('.tgz'):
+        print(f"  Detected tar.gz archive")
+        try:
+            print(f"  Extracting tar.gz to {extract_to}...")
+            with tarfile.open(archive_path, 'r:gz') as tar_ref:
+                # Get list of members
+                members = tar_ref.getmembers()
+                print(f"  Found {len(members)} files in archive")
+                
+                # Extract all
+                tar_ref.extractall(path=extract_to)
+                print(f"✅ Dataset extracted to {extract_to}")
+        except Exception as e:
+            raise Exception(f"Error extracting tar.gz file: {e}")
     
-    print(f"✅ Dataset extracted to {extract_to}")
-    
-    # The dataset should be in lvis_rfdetr_dataset/ folder after extraction
-    dataset_dir = os.path.join(extract_to, 'lvis_rfdetr_dataset')
+    elif archive_path.endswith('.zip'):
+        print(f"  Detected zip archive")
+        # Try using system unzip command first (more reliable for large files)
+        import subprocess
+        try:
+            print(f"  Attempting extraction with system unzip command...")
+            result = subprocess.run(
+                ['unzip', '-q', '-o', archive_path, '-d', extract_to],
+                capture_output=True,
+                text=True,
+                timeout=3600  # 1 hour timeout
+            )
+            if result.returncode == 0:
+                print(f"✅ Dataset extracted to {extract_to}")
+            else:
+                print(f"  System unzip failed: {result.stderr}")
+                raise Exception("System unzip failed")
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            print(f"  System unzip not available or failed: {e}")
+            print(f"  Falling back to Python zipfile...")
+            
+            try:
+                # Use allowZip64=True for large files
+                with zipfile.ZipFile(archive_path, 'r', allowZip64=True) as zip_ref:
+                    # Get list of files
+                    file_list = zip_ref.namelist()
+                    print(f"  Found {len(file_list)} files in archive")
+                    
+                    # Extract with progress indication
+                    print(f"  Extracting to {extract_to}...")
+                    for i, file in enumerate(file_list):
+                        zip_ref.extract(file, extract_to)
+                        if (i + 1) % 1000 == 0:
+                            print(f"    Extracted {i + 1}/{len(file_list)} files...")
+                    
+                    print(f"✅ Dataset extracted to {extract_to}")
+            
+            except zipfile.BadZipFile:
+                raise Exception(f"Error: {archive_path} is not a valid zip file or is corrupted")
+            except OSError as e:
+                raise Exception(f"Error extracting zip file: {e}. The file may be corrupted.")
+    else:
+        raise Exception(f"Unsupported archive format: {archive_path}. Expected .tar.gz or .zip")
     
     # Verify the structure
     if os.path.exists(dataset_dir):
@@ -49,15 +117,16 @@ def train_rfdetr(args):
     model = RFDETRSmall()
     
     # Find and extract dataset
-    zip_files = [f for f in os.listdir(args.dataset_dir) if f.endswith('.zip')]
-    if not zip_files:
-        raise FileNotFoundError(f"No zip file found in {args.dataset_dir}")
+    archive_files = [f for f in os.listdir(args.dataset_dir) 
+                     if f.endswith(('.zip', '.tar.gz', '.tgz'))]
+    if not archive_files:
+        raise FileNotFoundError(f"No archive file (.zip, .tar.gz) found in {args.dataset_dir}")
     
-    dataset_zip = os.path.join(args.dataset_dir, zip_files[0])
-    print(f"\n📂 Found dataset: {zip_files[0]}")
+    dataset_archive = os.path.join(args.dataset_dir, archive_files[0])
+    print(f"\n📂 Found dataset: {archive_files[0]}")
     
     # Extract dataset (already in correct RF-DETR format)
-    dataset_dir = extract_dataset(dataset_zip)
+    dataset_dir = extract_dataset(dataset_archive)
     
     # Verify dataset structure
     if not os.path.exists(os.path.join(dataset_dir, 'train')):
