@@ -26,21 +26,80 @@ def extract_dataset(archive_path, extract_to="/tmp/dataset"):
     
     os.makedirs(extract_to, exist_ok=True)
     
+    # Check file header to determine actual type
+    with open(archive_path, 'rb') as f:
+        header = f.read(10)
+        print(f"  File header (hex): {header[:10].hex()}")
+    
     # Determine file type and extract accordingly
-    if archive_path.endswith('.tar.gz') or archive_path.endswith('.tgz'):
-        print(f"  Detected tar.gz archive")
+    if archive_path.endswith('.tar.gz') or archive_path.endswith('.tgz') or archive_path.endswith('.tar'):
+        print(f"  Detected tar archive")
+        
+        # Strategy 1: Try system tar command (most reliable)
+        import subprocess
         try:
-            print(f"  Extracting tar.gz to {extract_to}...")
-            with tarfile.open(archive_path, 'r:gz') as tar_ref:
-                # Get list of members
+            print(f"  Attempting extraction with system tar command...")
+            result = subprocess.run(
+                ['tar', '-xzf', archive_path, '-C', extract_to],
+                capture_output=True,
+                text=True,
+                timeout=7200  # 2 hour timeout for large file
+            )
+            if result.returncode == 0:
+                print(f"✅ Dataset extracted to {extract_to}")
+                return verify_and_return_dataset(dataset_dir, extract_to)
+            else:
+                print(f"  System tar failed: {result.stderr}")
+                print(f"  Trying alternative methods...")
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            print(f"  System tar not available or failed: {e}")
+        
+        # Strategy 2: Try Python tarfile with auto-detection
+        try:
+            print(f"  Trying Python tarfile with auto-detection...")
+            with tarfile.open(archive_path, 'r:*') as tar_ref:
                 members = tar_ref.getmembers()
                 print(f"  Found {len(members)} files in archive")
-                
-                # Extract all
                 tar_ref.extractall(path=extract_to)
                 print(f"✅ Dataset extracted to {extract_to}")
+                return verify_and_return_dataset(dataset_dir, extract_to)
+        except tarfile.ReadError as e:
+            print(f"  Auto-detection failed: {e}")
+        
+        # Strategy 3: Try as uncompressed tar
+        try:
+            print(f"  Trying as uncompressed tar...")
+            with tarfile.open(archive_path, 'r:') as tar_ref:
+                members = tar_ref.getmembers()
+                print(f"  Found {len(members)} files in archive")
+                tar_ref.extractall(path=extract_to)
+                print(f"✅ Dataset extracted to {extract_to}")
+                return verify_and_return_dataset(dataset_dir, extract_to)
         except Exception as e:
-            raise Exception(f"Error extracting tar.gz file: {e}")
+            print(f"  Uncompressed tar failed: {e}")
+        
+        # Strategy 4: Try manually with gzip and tar
+        try:
+            import gzip
+            import shutil
+            print(f"  Trying manual gzip decompression...")
+            temp_tar = archive_path.replace('.gz', '.tmp')
+            with gzip.open(archive_path, 'rb') as f_in:
+                with open(temp_tar, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            
+            with tarfile.open(temp_tar, 'r:') as tar_ref:
+                members = tar_ref.getmembers()
+                print(f"  Found {len(members)} files in archive")
+                tar_ref.extractall(path=extract_to)
+            
+            os.remove(temp_tar)
+            print(f"✅ Dataset extracted to {extract_to}")
+            return verify_and_return_dataset(dataset_dir, extract_to)
+        except Exception as e:
+            print(f"  Manual gzip decompression failed: {e}")
+        
+        raise Exception(f"All extraction methods failed for tar archive")
     
     elif archive_path.endswith('.zip'):
         print(f"  Detected zip archive")
@@ -56,37 +115,29 @@ def extract_dataset(archive_path, extract_to="/tmp/dataset"):
             )
             if result.returncode == 0:
                 print(f"✅ Dataset extracted to {extract_to}")
+                return verify_and_return_dataset(dataset_dir, extract_to)
             else:
                 print(f"  System unzip failed: {result.stderr}")
-                raise Exception("System unzip failed")
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
             print(f"  System unzip not available or failed: {e}")
+        
+        # Fallback to Python zipfile
+        try:
             print(f"  Falling back to Python zipfile...")
-            
-            try:
-                # Use allowZip64=True for large files
-                with zipfile.ZipFile(archive_path, 'r', allowZip64=True) as zip_ref:
-                    # Get list of files
-                    file_list = zip_ref.namelist()
-                    print(f"  Found {len(file_list)} files in archive")
-                    
-                    # Extract with progress indication
-                    print(f"  Extracting to {extract_to}...")
-                    for i, file in enumerate(file_list):
-                        zip_ref.extract(file, extract_to)
-                        if (i + 1) % 1000 == 0:
-                            print(f"    Extracted {i + 1}/{len(file_list)} files...")
-                    
-                    print(f"✅ Dataset extracted to {extract_to}")
-            
-            except zipfile.BadZipFile:
-                raise Exception(f"Error: {archive_path} is not a valid zip file or is corrupted")
-            except OSError as e:
-                raise Exception(f"Error extracting zip file: {e}. The file may be corrupted.")
+            with zipfile.ZipFile(archive_path, 'r', allowZip64=True) as zip_ref:
+                file_list = zip_ref.namelist()
+                print(f"  Found {len(file_list)} files in archive")
+                zip_ref.extractall(extract_to)
+                print(f"✅ Dataset extracted to {extract_to}")
+                return verify_and_return_dataset(dataset_dir, extract_to)
+        except Exception as e:
+            raise Exception(f"Error extracting zip file: {e}")
     else:
-        raise Exception(f"Unsupported archive format: {archive_path}. Expected .tar.gz or .zip")
-    
-    # Verify the structure
+        raise Exception(f"Unsupported archive format: {archive_path}")
+
+
+def verify_and_return_dataset(dataset_dir, extract_to):
+    """Verify dataset structure and return path."""
     if os.path.exists(dataset_dir):
         print(f"✅ Found dataset directory: {dataset_dir}")
         for split in ['train', 'valid']:
