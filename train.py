@@ -251,6 +251,14 @@ def train_rfdetr(args):
     # Fix LVIS annotations for RF-DETR compatibility
     fix_lvis_annotations(dataset_dir)
     
+    # Create test directory as symlink to valid (RF-DETR expects test split)
+    test_dir = os.path.join(dataset_dir, 'test')
+    valid_dir = os.path.join(dataset_dir, 'valid')
+    if not os.path.exists(test_dir) and os.path.exists(valid_dir):
+        print(f"\n🔗 Creating test directory as symlink to valid...")
+        os.symlink(valid_dir, test_dir, target_is_directory=True)
+        print(f"  ✅ Test directory created (points to valid)")
+    
     print(f"\n🎯 Starting training...")
     print(f"  - Dataset: {dataset_dir}")
     print(f"  - Epochs: {args.epochs}")
