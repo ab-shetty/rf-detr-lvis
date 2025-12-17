@@ -159,9 +159,40 @@ def verify_and_return_dataset(dataset_dir, extract_to):
 
 
 def fix_lvis_annotations(dataset_dir):
-    """Add 'supercategory' field to LVIS categories for RF-DETR compatibility."""
+    """
+    Fix LVIS annotations for RF-DETR compatibility:
+    1. Add 'supercategory' field
+    2. Remap category IDs to be contiguous (0 to N-1)
+    """
     print("\n🔧 Checking and fixing LVIS annotations for RF-DETR compatibility...")
     
+    # First pass: collect all unique category IDs across splits
+    all_categories = {}
+    
+    for split in ['train', 'valid']:
+        anno_path = os.path.join(dataset_dir, split, '_annotations.coco.json')
+        
+        if not os.path.exists(anno_path):
+            continue
+        
+        with open(anno_path, 'r') as f:
+            data = json.load(f)
+        
+        for cat in data['categories']:
+            if cat['id'] not in all_categories:
+                all_categories[cat['id']] = cat
+    
+    # Create mapping from old IDs to new contiguous IDs (0 to N-1)
+    old_to_new_id = {}
+    sorted_cat_ids = sorted(all_categories.keys())
+    
+    for new_id, old_id in enumerate(sorted_cat_ids):
+        old_to_new_id[old_id] = new_id
+    
+    print(f"  📊 Found {len(all_categories)} categories")
+    print(f"  🔄 Remapping category IDs: {min(sorted_cat_ids)}-{max(sorted_cat_ids)} → 0-{len(all_categories)-1}")
+    
+    # Second pass: fix each split
     for split in ['train', 'valid']:
         anno_path = os.path.join(dataset_dir, split, '_annotations.coco.json')
         
@@ -173,23 +204,33 @@ def fix_lvis_annotations(dataset_dir):
         with open(anno_path, 'r') as f:
             data = json.load(f)
         
-        # Check if categories already have supercategory
-        if data['categories'] and 'supercategory' in data['categories'][0]:
-            print(f"  ✅ {split} annotations already have 'supercategory' field")
+        # Check if already fixed
+        if (data['categories'] and 
+            'supercategory' in data['categories'][0] and
+            data['categories'][0]['id'] == 0):
+            print(f"  ✅ {split} annotations already fixed")
             continue
         
         print(f"  📝 Fixing {split} annotations...")
         
-        # Add supercategory to each category
-        # LVIS doesn't have supercategories, so we'll set them all to 'object'
+        # Fix categories: add supercategory and remap IDs
         for category in data['categories']:
+            old_id = category['id']
+            category['id'] = old_to_new_id[old_id]
             category['supercategory'] = 'object'
+        
+        # Fix annotations: remap category IDs
+        for annotation in data['annotations']:
+            old_cat_id = annotation['category_id']
+            annotation['category_id'] = old_to_new_id[old_cat_id]
         
         # Save fixed annotations
         with open(anno_path, 'w') as f:
             json.dump(data, f)
         
-        print(f"  ✅ Fixed {len(data['categories'])} categories in {split}")
+        print(f"  ✅ Fixed {len(data['categories'])} categories and {len(data['annotations'])} annotations in {split}")
+    
+    print(f"  ✅ Category ID remapping complete")
 
 
 def train_rfdetr(args):
