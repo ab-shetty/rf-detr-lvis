@@ -2,6 +2,7 @@ import os
 import zipfile
 import tarfile
 import argparse
+import json
 from pathlib import Path
 from rfdetr import RFDETRSmall
 
@@ -157,6 +158,40 @@ def verify_and_return_dataset(dataset_dir, extract_to):
     return dataset_dir
 
 
+def fix_lvis_annotations(dataset_dir):
+    """Add 'supercategory' field to LVIS categories for RF-DETR compatibility."""
+    print("\n🔧 Checking and fixing LVIS annotations for RF-DETR compatibility...")
+    
+    for split in ['train', 'valid']:
+        anno_path = os.path.join(dataset_dir, split, '_annotations.coco.json')
+        
+        if not os.path.exists(anno_path):
+            print(f"  ⚠️  Annotation file not found: {anno_path}")
+            continue
+        
+        # Load annotations
+        with open(anno_path, 'r') as f:
+            data = json.load(f)
+        
+        # Check if categories already have supercategory
+        if data['categories'] and 'supercategory' in data['categories'][0]:
+            print(f"  ✅ {split} annotations already have 'supercategory' field")
+            continue
+        
+        print(f"  📝 Fixing {split} annotations...")
+        
+        # Add supercategory to each category
+        # LVIS doesn't have supercategories, so we'll set them all to 'object'
+        for category in data['categories']:
+            category['supercategory'] = 'object'
+        
+        # Save fixed annotations
+        with open(anno_path, 'w') as f:
+            json.dump(data, f)
+        
+        print(f"  ✅ Fixed {len(data['categories'])} categories in {split}")
+
+
 def train_rfdetr(args):
     """Train RF-DETR model on LVIS dataset."""
     print("="*60)
@@ -167,17 +202,37 @@ def train_rfdetr(args):
     print("\n📦 Initializing RF-DETR Small model...")
     model = RFDETRSmall()
     
-    # Find and extract dataset
-    archive_files = [f for f in os.listdir(args.dataset_dir) 
-                     if f.endswith(('.zip', '.tar.gz', '.tgz'))]
-    if not archive_files:
-        raise FileNotFoundError(f"No archive file (.zip, .tar.gz) found in {args.dataset_dir}")
+    # Check if dataset is already extracted or needs extraction
+    dataset_dir = None
     
-    dataset_archive = os.path.join(args.dataset_dir, archive_files[0])
-    print(f"\n📂 Found dataset: {archive_files[0]}")
+    # First, check if dataset is already in the expected structure (from HuggingFace)
+    possible_dataset_dir = os.path.join(args.dataset_dir, 'lvis_rfdetr_dataset')
+    if os.path.exists(possible_dataset_dir) and os.path.exists(os.path.join(possible_dataset_dir, 'train')):
+        print(f"\n📂 Found pre-extracted dataset at: {possible_dataset_dir}")
+        dataset_dir = possible_dataset_dir
     
-    # Extract dataset (already in correct RF-DETR format)
-    dataset_dir = extract_dataset(dataset_archive)
+    # Or check if the dataset_dir itself is the dataset root
+    elif os.path.exists(os.path.join(args.dataset_dir, 'train')) and os.path.exists(os.path.join(args.dataset_dir, 'valid')):
+        print(f"\n📂 Found pre-extracted dataset at: {args.dataset_dir}")
+        dataset_dir = args.dataset_dir
+    
+    # Otherwise, look for archive files to extract
+    else:
+        archive_files = [f for f in os.listdir(args.dataset_dir) 
+                         if f.endswith(('.zip', '.tar.gz', '.tgz', '.tar'))]
+        if not archive_files:
+            raise FileNotFoundError(
+                f"No dataset found in {args.dataset_dir}. "
+                f"Expected either:\n"
+                f"  - Pre-extracted dataset with train/ and valid/ directories\n"
+                f"  - Archive file (.zip, .tar.gz) to extract"
+            )
+        
+        dataset_archive = os.path.join(args.dataset_dir, archive_files[0])
+        print(f"\n📂 Found dataset archive: {archive_files[0]}")
+        
+        # Extract dataset (already in correct RF-DETR format)
+        dataset_dir = extract_dataset(dataset_archive)
     
     # Verify dataset structure
     if not os.path.exists(os.path.join(dataset_dir, 'train')):
@@ -185,7 +240,19 @@ def train_rfdetr(args):
     if not os.path.exists(os.path.join(dataset_dir, 'valid')):
         raise FileNotFoundError(f"Valid directory not found in {dataset_dir}")
     
+    # Show dataset info
+    for split in ['train', 'valid']:
+        split_dir = os.path.join(dataset_dir, split)
+        anno_file = os.path.join(split_dir, '_annotations.coco.json')
+        if os.path.exists(split_dir):
+            num_images = len([f for f in os.listdir(split_dir) if f.endswith('.jpg')])
+            print(f"  - {split}: {num_images} images, annotations: {os.path.exists(anno_file)}")
+    
+    # Fix LVIS annotations for RF-DETR compatibility
+    fix_lvis_annotations(dataset_dir)
+    
     print(f"\n🎯 Starting training...")
+    print(f"  - Dataset: {dataset_dir}")
     print(f"  - Epochs: {args.epochs}")
     print(f"  - Batch size: {args.batch}")
     print(f"  - Gradient accumulation steps: {args.grad_accum_steps}")
