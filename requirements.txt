@@ -1,1 +1,2 @@
 git+https://github.com/ab-shetty/rf-detr.git
+wandb
