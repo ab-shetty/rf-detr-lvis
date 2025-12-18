@@ -42,6 +42,7 @@ def fix_lvis_annotations(dataset_dir):
     Fix LVIS annotations for RF-DETR compatibility:
     1. Add 'supercategory' field
     2. Remap category IDs to be contiguous (0 to N-1)
+    3. Add 'iscrowd' field to annotations
     """
     print("Fixing LVIS annotations for RF-DETR compatibility...")
     
@@ -72,22 +73,27 @@ def fix_lvis_annotations(dataset_dir):
             data = json.load(f)
         
         # Check if already fixed
-        if data['categories'] and data['categories'][0]['id'] == 0 and 'supercategory' in data['categories'][0]:
+        if (data['categories'] and data['categories'][0]['id'] == 0 and 
+            'supercategory' in data['categories'][0] and
+            data['annotations'] and 'iscrowd' in data['annotations'][0]):
             continue
         
-        # Fix categories and annotations
+        # Fix categories
         for category in data['categories']:
             category['id'] = old_to_new_id[category['id']]
             category['supercategory'] = 'object'
         
+        # Fix annotations
         for annotation in data['annotations']:
             annotation['category_id'] = old_to_new_id[annotation['category_id']]
+            # Add iscrowd field if missing (LVIS doesn't have crowd annotations)
+            if 'iscrowd' not in annotation:
+                annotation['iscrowd'] = 0
         
         with open(anno_path, 'w') as f:
             json.dump(data, f)
     
     print(f"  ✅ Fixed {len(all_categories)} categories")
-
 
 def train_rfdetr(args):
     """Train RF-DETR model on LVIS dataset."""
