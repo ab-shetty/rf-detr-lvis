@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 from rfdetr import RFDETRSmall
+import wandb
 
 
 def extract_dataset(archive_path, extract_to="/tmp/dataset"):
@@ -13,7 +14,7 @@ def extract_dataset(archive_path, extract_to="/tmp/dataset"):
     # Check if already extracted
     dataset_dir = os.path.join(extract_to, 'lvis_rfdetr_dataset')
     if os.path.exists(dataset_dir) and os.path.exists(os.path.join(dataset_dir, 'train')):
-        print(f"✅ Dataset already extracted at {dataset_dir}")
+        print(f"Dataset already extracted at {dataset_dir}")
         return dataset_dir
     
     print(f"Extracting dataset from {archive_path}...")
@@ -32,7 +33,7 @@ def extract_dataset(archive_path, extract_to="/tmp/dataset"):
     else:
         raise ValueError(f"Unsupported archive format: {archive_path}")
     
-    print(f"✅ Dataset extracted to {extract_to}")
+    print(f"Dataset extracted to {extract_to}")
     return dataset_dir
 
 
@@ -42,7 +43,7 @@ def fix_lvis_annotations(dataset_dir):
     1. Add 'supercategory' field
     2. Remap category IDs to be contiguous (0 to N-1)
     """
-    print("\n🔧 Fixing LVIS annotations for RF-DETR compatibility...")
+    print("Fixing LVIS annotations for RF-DETR compatibility...")
     
     # Collect all unique category IDs
     all_categories = {}
@@ -90,12 +91,13 @@ def fix_lvis_annotations(dataset_dir):
 
 def train_rfdetr(args):
     """Train RF-DETR model on LVIS dataset."""
-    print("="*60)
-    print("RF-DETR Training on LVIS Dataset")
-    print("="*60)
+
+    # Set W&B entity before RF-DETR initializes
+    os.environ['WANDB_ENTITY'] = 'ashetty21-university-of-california-berkeley'
+    wandb.login(key=os.environ.get('WANDB_API_KEY'))
     
     # Initialize model
-    print("\n📦 Initializing RF-DETR Small model...")
+    print("Initializing RF-DETR Small model...")
     model = RFDETRSmall()
     
     # Locate dataset
@@ -114,10 +116,10 @@ def train_rfdetr(args):
             raise FileNotFoundError(f"No dataset found in {args.dataset_dir}")
         
         dataset_archive = os.path.join(args.dataset_dir, archive_files[0])
-        print(f"\n📂 Extracting: {archive_files[0]}")
+        print(f"Extracting: {archive_files[0]}")
         dataset_dir = extract_dataset(dataset_archive)
     
-    print(f"\n📂 Dataset: {dataset_dir}")
+    print(f"Dataset: {dataset_dir}")
     
     # Fix annotations and create test symlink
     fix_lvis_annotations(dataset_dir)
@@ -127,7 +129,7 @@ def train_rfdetr(args):
     if not os.path.exists(test_dir):
         os.symlink(valid_dir, test_dir, target_is_directory=True)
     
-    print(f"\n🎯 Starting training...")
+    print(f"\n Starting training...")
     print(f"  - Epochs: {args.epochs}")
     print(f"  - Batch size: {args.batch}")
     print(f"  - Grad accum: {args.grad_accum_steps}")
@@ -141,11 +143,44 @@ def train_rfdetr(args):
         batch_size=args.batch,
         grad_accum_steps=args.grad_accum_steps,
         lr=args.lr,
-        output_dir=args.out_dir
+        output_dir=args.out_dir,
+        wandb=True,
+        project=args.wandb_project,
+    )
+
+    # Get the run ID that RF-DETR just used
+    print("Saving model artifact to W&B...")
+    api = wandb.Api()
+    runs = api.runs(f"ashetty21-university-of-california-berkeley/{args.wandb_project}", order="-created_at")
+    latest_run_id = runs[0].id
+    
+    # Resume that run to add artifact
+    run = wandb.init(
+        project=args.wandb_project,
+        entity="ashetty21-university-of-california-berkeley",
+        id=latest_run_id,
+        resume="must"
     )
     
-    print("\n✅ Training completed!")
-    print(f"📁 Checkpoints: {args.out_dir}")
+    artifact = wandb.Artifact(
+        name=f"rfdetr-small-model",
+        type="model",
+        description=f"RF-DETR Small trained for {args.epochs} epochs"
+    )
+    
+    # Add checkpoint files to artifact
+    for file in os.listdir(args.out_dir):
+        if file.endswith('_best_total.pth'):
+            artifact.add_file(os.path.join(args.out_dir, file))
+    
+    # Log the artifact
+    wandb.log_artifact(artifact)
+    
+    # Finish the run
+    wandb.finish()
+    print("Model artifact saved to W&B")
+    print("Training completed!")
+    print(f"Checkpoints: {args.out_dir}")
 
 
 def main():
@@ -164,6 +199,8 @@ def main():
                         help='Gradient accumulation steps')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
+    parser.add_argument('--wandb_project', type=str, default='rfdetr-training',
+                        help='W&B project name')
     
     args = parser.parse_args()
     train_rfdetr(args)
